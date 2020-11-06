@@ -123,11 +123,9 @@ def record(args):
     if streamurl.endswith('.m3u'):
         verboseprint('Seems to be an M3U playlist. Trying to parse...')
         pool = urllib3.PoolManager()
-        with pool.request('GET',streamurl) as remotefile:
-            for line in remotefile:
-                if not line.decode('utf-8').startswith('#') and len(line) > 1:
-                    tmpstr = line.decode('utf-8')
-                    break
+        remotefile = pool.request('GET', streamurl)
+        if not remotefile.data.decode('utf-8').startswith('#') and len(remotefile.data) > 1:
+            tmpstr = remotefile.data.decode('utf-8')
         streamurl = tmpstr
 
     verboseprint(print_time() + " ... Stream URL: " + streamurl)
