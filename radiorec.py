@@ -106,12 +106,14 @@ def record_worker(stoprec, streamurl, target_dir, args):
         while(not stoprec.is_set() and not conn.closed):
             target.write(conn.read(1024))
 
+
     verboseprint(print_time() + " ... Connection closed = " + str(conn.closed))
     conn.release_conn()
 
 def record(args):
     settings = read_settings(args)
     streamurl = ''
+    tmpstr = ''
     global verboseprint
     verboseprint = print if args.verbose else lambda *a, **k: None
 
@@ -123,15 +125,30 @@ def record(args):
     if streamurl.endswith('.m3u'):
         verboseprint('Seems to be an M3U playlist. Trying to parse...')
         pool = urllib3.PoolManager()
-        remotefile = pool.request('GET', streamurl)
-        for line in remotefile.data.decode().split():
-            if not line.startswith('#') and len(line) > 1:
-                tmpstr = line
-                break
-        streamurl = tmpstr
+        try:
+            remotefile = pool.request('GET', streamurl)
+        except MaxRetryError:
+            print('The URL of the station is not found! Check' + args.station + ' in the Settings!')
+            sys.exit()
+        if remotefile.status != 200:
+            print('The URL of the station is somehow faulty! Check' + args.station + ' in the Settings!')
+            sys.exit()
+        else:
+            for line in remotefile.data.decode().split():
+                if not line.startswith('#') and len(line) > 1 and line.endswith('mp3'):
+                    tmpstr = line
+                    break
+        if not len(tmpstr) > 1:
+            print('Could not find a mp3 stream')
+            sys.exit()
+        else:
+            streamurl = tmpstr
 
     verboseprint(print_time() + " ... Stream URL: " + streamurl)
     target_dir = os.path.expandvars(settings['GLOBAL']['target_dir'])
+    if not os.path.isdir(target_dir + os.sep):
+        print('Target directory not found! Check that ' + target_dir + ' is a valid folder!')
+        sys.exit()
     started_at = time.time()
     should_end_at = started_at + (args.duration * 60)
     remaining = (args.duration * 60)
