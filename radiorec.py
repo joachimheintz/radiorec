@@ -29,10 +29,13 @@ import threading
 import urllib3
 import logging
 import time
+from urllib3.exceptions import MaxRetryError
 logging.basicConfig(level=logging.DEBUG)
+
 
 def print_time():
     return time.strftime("%Y-%m-%d %H:%M:%S")
+
 
 def check_duration(value):
     try:
@@ -58,7 +61,8 @@ def read_settings(args):
     elif sys.platform == 'win32':
         settings_base_dir = os.getenv('LOCALAPPDATA') + os.sep + 'radiorec'
     elif sys.platform == 'darwin':
-        settings_base_dir = os.getenv('HOME') + os.sep + 'Library' + os.sep + 'Application Support' + os.sep + 'radiorec'
+        settings_base_dir = os.getenv('HOME') + os.sep + 'Library' + os.sep + \
+                            'Application Support' + os.sep + 'radiorec'
     settings_base_dir += os.sep
     config = configparser.ConfigParser()
     try:
@@ -72,7 +76,7 @@ def read_settings(args):
 
 def record_worker(stoprec, streamurl, target_dir, args):
     pool = urllib3.PoolManager()
-    conn = pool.request('GET',streamurl, preload_content=False)
+    conn = pool.request('GET', streamurl, preload_content=False)
     conn.auto_close = False
     if conn.status != 200:
         conn.release_conn()
@@ -85,7 +89,7 @@ def record_worker(stoprec, streamurl, target_dir, args):
     if args.name:
         filename += '_' + args.name
     content_type = conn.getheader('Content-Type')
-    if(content_type == 'audio/mpeg'):
+    if (content_type == 'audio/mpeg'):
         filename += '.mp3'
     elif(content_type == 'application/aacp' or content_type == 'audio/aacp'):
         filename += '.aac'
@@ -109,9 +113,11 @@ def record_worker(stoprec, streamurl, target_dir, args):
     verboseprint(print_time() + " ... Connection closed = " + str(conn.closed))
     conn.release_conn()
 
+
 def record(args):
     settings = read_settings(args)
     streamurl = ''
+    tmpstr = ''
     global verboseprint
     verboseprint = print if args.verbose else lambda *a, **k: None
 
@@ -123,15 +129,36 @@ def record(args):
     if streamurl.endswith('.m3u'):
         verboseprint('Seems to be an M3U playlist. Trying to parse...')
         pool = urllib3.PoolManager()
-        with pool.request('GET',streamurl) as remotefile:
-            for line in remotefile:
-                if not line.decode('utf-8').startswith('#') and len(line) > 1:
-                    tmpstr = line.decode('utf-8')
+        try:
+            remotefile = pool.request('GET', streamurl)
+        except MaxRetryError:
+            logging.getLogger(__name__).error('The URL of the station is somehow faulty! Check' +
+                                              args.station + ' in the Settings!')
+            sys.exit()
+        if remotefile.status != 200:
+            logging.getLogger(__name__).error(
+                'The URL of the station is somehow faulty! Check' + args.station + ' in the Settings!')
+            sys.exit(1)
+        else:
+            for line in remotefile.data.decode().split():
+                if not line.startswith('#') and len(line) > 1 and line.endswith('mp3'):
+                    tmpstr = line
                     break
-        streamurl = tmpstr
+        if not tmpstr:
+            logging.getLogger(__name__).error('Could not find a mp3 stream')
+            sys.exit(1)
+        else:
+            streamurl = tmpstr
 
     verboseprint(print_time() + " ... Stream URL: " + streamurl)
     target_dir = os.path.expandvars(settings['GLOBAL']['target_dir'])
+    if not os.path.isdir(target_dir):
+        try:
+            os.mkdir(target_dir)
+        except FileNotFoundError:
+            logging.getLogger(__name__).error('Target directory not found! Check that ' +
+                                              target_dir + ' is a valid folder!')
+            sys.exit(1)
     started_at = time.time()
     should_end_at = started_at + (args.duration * 60)
     remaining = (args.duration * 60)
@@ -142,18 +169,20 @@ def record(args):
         recthread = threading.Thread(target=record_worker, args=(stoprec, streamurl, target_dir, args))
         recthread.setDaemon(True)
         recthread.start()
-        verboseprint(print_time() + " ... Started thread " + str(recthread) + " timeout: " + str(remaining / 60) + " min")
+        verboseprint(print_time() + " ... Started thread " + str(recthread) + " timeout: " +
+                     str(remaining / 60) + " min")
         recthread.join(remaining)
-        verboseprint(print_time() +  " ... Came out of rec thread again")
+        verboseprint(print_time() + " ... Came out of rec thread again")
 
-        if(recthread.is_alive):
+        if recthread.is_alive:
             stoprec.set()
             verboseprint(print_time() + " ... Called stoprec.set()")
         else:
             verboseprint(print_time() + " ... recthread.is_alive = False")
 
         remaining = should_end_at - time.time()
-        verboseprint(print_time() + " ... Remaining: " + str(remaining / 60) + ", Threads: "  + str(threading.activeCount()))
+        verboseprint(print_time() + " ... Remaining: " + str(remaining / 60) +
+                     ", Threads: " + str(threading.activeCount()))
 
 
 def list(args):
@@ -163,7 +192,8 @@ def list(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='This program records internet radio streams. It is free software and comes with ABSOLUTELY NO WARRANTY.')
+    parser = argparse.ArgumentParser(description='This program records internet radio streams. '
+                                                 'It is free software and comes with ABSOLUTELY NO WARRANTY.')
     subparsers = parser.add_subparsers(help='sub-command help')
     parser_record = subparsers.add_parser('record', help='Record a station')
     parser_record.add_argument('station', type=str,
@@ -184,7 +214,8 @@ def main():
     parser_record.set_defaults(func=record)
     parser_list = subparsers.add_parser('list', help='List all known stations')
     parser_list.set_defaults(func=list)
-    parser_list.add_argument('-s', '--settings', nargs='?', type=str, help="specify alternative location for settings.ini")
+    parser_list.add_argument('-s', '--settings', nargs='?', type=str,
+                             help="specify alternative location for settings.ini")
 
     if not len(sys.argv) > 1:
         print('Error: No argument specified.\n')
@@ -192,6 +223,7 @@ def main():
         sys.exit(1)
     args = parser.parse_args()
     args.func(args)
+
 
 if __name__ == '__main__':
     main()
